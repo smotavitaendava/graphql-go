@@ -144,6 +144,74 @@ type Response struct {
 	Extensions map[string]interface{} `json:"extensions,omitempty"`
 }
 
+func (s *Schema) ValidateOperation(queryString string, operationName string, variables map[string]interface{}) (string, []*errors.QueryError) {
+	doc, qErr := query.Parse(queryString)
+	if qErr != nil {
+		return "", []*errors.QueryError{qErr}
+	}
+
+	if err := validation.Validate(s.schema, doc, variables, s.maxDepth); err != nil {
+		return "", err
+	}
+
+	op, err := getOperation(doc, operationName)
+	if err != nil {
+		return "", []*errors.QueryError{errors.Errorf("%s", err)}
+	}
+
+	return string(op.Type), nil
+}
+
+func (s *Schema) ModifyingFields(queryString string, operationName string, variables map[string]interface{}) ([]string, []*errors.QueryError) {
+	doc, qErr := query.Parse(queryString)
+	if qErr != nil {
+		return nil, []*errors.QueryError{qErr}
+	}
+
+	if err := validation.Validate(s.schema, doc, variables, s.maxDepth); err != nil {
+		return nil, err
+	}
+
+	op, err := getOperation(doc, operationName)
+	if err != nil {
+		return nil, []*errors.QueryError{errors.Errorf("%s", err)}
+	}
+
+	if op.Type == query.Query {
+		return nil, nil
+	}
+
+	if op.Type == query.Mutation {
+		if _, ok := s.schema.EntryPoints["mutation"]; !ok {
+			return nil, []*errors.QueryError{{Message: "no mutations are offered by the schema"}}
+		}
+	}
+
+	fields := []string{}
+	mainField := op.Selections[0].(*query.Field)
+	for _, arg := range mainField.Arguments {
+		fields = append(fields, fieldsFromLiteral(arg.Name.Name, arg.Value)...)
+	}
+
+	return fields, nil
+}
+
+func fieldsFromLiteral(prefix string, lit common.Literal) []string {
+	fields := []string{}
+	switch t := lit.(type) {
+	case *common.ObjectLit:
+		for _, field := range t.Fields {
+			for _, fn := range fieldsFromLiteral(prefix+"."+field.Name.Name, field.Value) {
+				fields = append(fields, fn)
+			}
+		}
+	default:
+		fields = append(fields, prefix)
+	}
+
+	return fields
+}
+
 // Validate validates the given query with the schema.
 func (s *Schema) Validate(queryString string) []*errors.QueryError {
 	return s.ValidateWithVariables(queryString, nil)
